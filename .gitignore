@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# фото рецептов не храним в репозитории (личные данные)
+test_photos/
+*.jpg
+*.jpeg
+*.png
+*.heic
