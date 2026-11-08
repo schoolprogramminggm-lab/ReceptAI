@@ -1,20 +1,73 @@
-import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View } from 'react-native';
+import React, { useState } from "react";
+import { StatusBar } from "expo-status-bar";
+import { StyleSheet, SafeAreaView, View } from "react-native";
+
+import LanguageScreen from "./screens/LanguageScreen";
+import HomeScreen from "./screens/HomeScreen";
+import ResultScreen from "./screens/ResultScreen";
+import AboutScreen from "./screens/AboutScreen";
 
 export default function App() {
+  // Текущий экран: 'language' | 'home' | 'result' | 'about'
+  const [currentScreen, setCurrentScreen] = useState("language");
+  // Выбранный язык: 'ru' | 'kk'
+  const [lang, setLang] = useState("ru");
+  // Данные ответа сервера
+  const [resultData, setResultData] = useState(null);
+
+  // Выбор языка и переход на главный экран
+  const handleSelectLanguage = (selectedLang) => {
+    setLang(selectedLang);
+    setCurrentScreen("home");
+  };
+
+  // Получен результат распознавания от backend
+  const handleResultReceived = (data) => {
+    setResultData(data);
+    setCurrentScreen("result");
+  };
+
   return (
-    <View style={styles.container}>
-      <Text>Open up App.js to start working on your app!</Text>
-      <StatusBar style="auto" />
-    </View>
+    <SafeAreaView style={styles.container}>
+      <StatusBar style="dark" />
+
+      {currentScreen === "language" && (
+        <LanguageScreen
+          currentLang={lang}
+          onSelectLanguage={handleSelectLanguage}
+        />
+      )}
+
+      {currentScreen === "home" && (
+        <HomeScreen
+          lang={lang}
+          onChangeLang={() => setCurrentScreen("language")}
+          onOpenAbout={() => setCurrentScreen("about")}
+          onResultReceived={handleResultReceived}
+        />
+      )}
+
+      {currentScreen === "result" && (
+        <ResultScreen
+          result={resultData}
+          lang={lang}
+          onBack={() => setCurrentScreen("home")}
+        />
+      )}
+
+      {currentScreen === "about" && (
+        <AboutScreen
+          lang={lang}
+          onBack={() => setCurrentScreen("home")}
+        />
+      )}
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fff',
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: "#F8FAFC",
   },
 });
