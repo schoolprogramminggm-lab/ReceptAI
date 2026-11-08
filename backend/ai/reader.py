@@ -125,7 +125,7 @@ def read_prescription(image_bytes: bytes) -> list:
 
     # Получаем настройки из .env
     api_key = os.getenv("GEMINI_API_KEY")
-    model_name = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    model_name = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 
     if not api_key:
         raise EnvironmentError(
@@ -224,3 +224,4 @@ if __name__ == "__main__":
 
     print("--- JSON-ответ ---")
     print(json.dumps(drugs, ensure_ascii=False, indent=2))
+
