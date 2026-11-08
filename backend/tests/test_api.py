@@ -2,6 +2,7 @@
 Тестирование эндпоинтов бэкенда FastAPI:
 - GET /api/health
 - POST /api/read (с моком Gemini reader и проверкой структуры ответа)
+- Проверка разделения полей (form, dose, frequency, duration)
 """
 
 import io
@@ -23,18 +24,18 @@ def test_health_check():
 
 @patch("main.read_prescription")
 def test_read_prescription_success(mock_read):
-    # Мокируем ответ от Gemini reader
+    # Мокируем ответ от Gemini reader с детальным разделением полей
     mock_read.return_value = [
         {
-            "name": "Атропин",
-            "form": "капли глазные 1%",
-            "dose": "1 капля",
-            "frequency": "2 раза в день",
-            "duration": "7 дней",
+            "name": "натрия хлорид",
+            "form": "раствор 0.9%",
+            "dose": "по 2 капли в оба глаза",
+            "frequency": "форсаж: каждые 5 минут в течение 30 минут, 2 раза в день",
+            "duration": "3 дня",
             "sure": True,
         },
         {
-            "name": "Азотроп",
+            "name": "неразборчиво",
             "form": "таблетки",
             "dose": None,
             "frequency": None,
@@ -53,10 +54,20 @@ def test_read_prescription_success(mock_read):
     data = response.json()
     assert data["success"] is True
     assert len(data["drugs"]) == 2
-    assert data["drugs"][0]["name"] == "Атропин"
-    assert data["drugs"][0]["sure"] is True
-    assert data["drugs"][1]["sure"] is False
-    assert data["drugs"][1]["dose"] is None
+
+    # Проверка разделения полей первого лекарства
+    drug = data["drugs"][0]
+    assert drug["name"] == "натрия хлорид"
+    assert drug["form"] == "раствор 0.9%"
+    assert drug["dose"] == "по 2 капли в оба глаза"
+    assert "каждые 5 минут" in drug["frequency"]
+    assert drug["duration"] == "3 дня"
+    assert drug["sure"] is True
+
+    # Проверка неуверенного распознавания
+    unsure_drug = data["drugs"][1]
+    assert unsure_drug["sure"] is False
+    assert unsure_drug["dose"] is None
     assert "disclaimer" in data
 
 
