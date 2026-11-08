@@ -1,0 +1,11 @@
+# Зависимости бэкенда ReceptAI
+# Установка: pip install -r requirements.txt
+
+fastapi==0.115.5          # веб-фреймворк для API
+uvicorn==0.32.1           # ASGI-сервер для запуска FastAPI
+python-multipart==0.0.12  # приём файлов (фото) через multipart/form-data
+python-dotenv==1.0.1      # чтение .env файла с ключами
+rapidfuzz==3.10.1         # нечёткий поиск по справочнику лекарств
+google-genai==1.14.0      # клиент Gemini API (работает с Python 3.9+)
+Pillow==11.0.0            # обработка изображений (конвертация HEIC→JPEG)
+pytest==8.3.3             # тестирование
