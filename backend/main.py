@@ -6,10 +6,13 @@ main.py — FastAPI бэкенд ReceptAI
 """
 
 import os
+import sys
 from typing import Optional
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+
+from ai.reader import read_prescription
 
 # Загружаем переменные окружения (.env)
 load_dotenv()
@@ -17,7 +20,7 @@ load_dotenv()
 app = FastAPI(
     title="ReceptAI API",
     description="API для распознавания рецептов врача и поиска аналогов лекарств",
-    version="0.1.0",
+    version="0.2.0",
 )
 
 # Разрешаем CORS, чтобы мобильное приложение Expo могло слать запросы
@@ -52,15 +55,15 @@ async def read_prescription_endpoint(
     lang: Optional[str] = Form("ru"),
 ):
     """
-    Приём фотографии рецепта на распознавание.
-    
+    Приём фотографии рецепта на распознавание через Gemini AI.
+
     Входные параметры:
         photo: файл изображения (jpg, png, heic)
         lang: язык ответа ('kk' или 'ru')
     """
     # 1. Считываем файл напрямую в память
     image_bytes = await photo.read()
-    
+
     # 2. Проверяем размер
     if len(image_bytes) > MAX_PHOTO_SIZE:
         raise HTTPException(
@@ -85,35 +88,54 @@ async def read_prescription_endpoint(
             ),
         )
 
-    # Заглушка для этапа #6: подтверждение приёма файла сервером в памяти
+    # 4. Отправляем в Gemini AI на чтение рукописного текста
+    try:
+        drugs = read_prescription(image_bytes)
+    except EnvironmentError as e:
+        # Не настроен API-ключ на сервере
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Серверде Gemini API кілті бапталмаған"
+                if lang == "kk"
+                else "На сервере не настроен GEMINI_API_KEY"
+            ),
+        )
+    except Exception as e:
+        # Ошибка сети / квоты / региона
+        error_msg = str(e)
+        detail_msg = (
+            f"Рецептті тану кезінде қате орын алды: {error_msg}"
+            if lang == "kk"
+            else f"Ошибка распознавания рецепта нейросетью: {error_msg}"
+        )
+        raise HTTPException(status_code=502, detail=detail_msg)
+
+    # 5. Возвращаем распознанные лекарства
+    message = (
+        f"Рецепт сәтті танылды! {len(drugs)} дәрі табылды."
+        if lang == "kk"
+        else f"Рецепт успешно распознан! Найдено лекарств: {len(drugs)}."
+    )
+
+    if not drugs:
+        message = (
+            "Суреттен рецепт немесе дәрі анықталмады. Басқа анық суретті байқап көріңіз."
+            if lang == "kk"
+            else "На фото не найдено лекарств или почерк не удалось разобрать. Попробуйте более четкое фото."
+        )
+
+    disclaimer = (
+        "Бұл дәрігер кеңесін алмастырмайды. Дәрі-дәрмекті қабылдамас бұрын маманмен кеңесіңіз."
+        if lang == "kk"
+        else "Это не замена консультации врача. Обязательно уточните у врача или фармацевта."
+    )
+
     return {
         "success": True,
-        "message": (
-            "Фото қабылданды, өңделуде!"
-            if lang == "kk"
-            else "Фото получено сервером, обработано в памяти!"
-        ),
+        "message": message,
         "received_size_kb": round(len(image_bytes) / 1024, 1),
         "lang": lang,
-        "drugs": [
-            {
-                "name": (
-                    "Натрий хлориді ерітіндісі"
-                    if lang == "kk"
-                    else "Раствор натрия хлорида"
-                ),
-                "form": "раствор" if lang == "ru" else "ерітінді",
-                "dose": "0,9%",
-                "frequency": (
-                    "күніне 2 рет" if lang == "kk" else "2 раза в день"
-                ),
-                "duration": "3 дня" if lang == "ru" else "3 күн",
-                "sure": True,
-            }
-        ],
-        "disclaimer": (
-            "Бұл дәрігер кеңесін алмастырмайды. Дәрі-дәрмекті қабылдамас бұрын маманмен кеңесіңіз."
-            if lang == "kk"
-            else "Это не замена консультации врача. Обязательно уточните у врача или фармацевта."
-        ),
+        "drugs": drugs,
+        "disclaimer": disclaimer,
     }
