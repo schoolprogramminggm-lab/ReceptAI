@@ -12,6 +12,43 @@ import {
 import * as ImagePicker from "expo-image-picker";
 import { translations } from "../translations";
 
+// Отправляет форму с фото на сервер и возвращает { ok, status, data }.
+//
+// Почему не fetch: в Expo SDK 58 глобальный fetch — это expo/fetch. Он не умеет
+// файлы вида { uri, name, type } в FormData и падает с ошибкой
+// «Unsupported FormDataPart implementation». XMLHttpRequest в Expo не заменяется:
+// это родной запрос React Native, он понимает { uri, name, type } и сам читает файл
+// с телефона. Фото при этом никуда не сохраняется.
+//
+// Если сервер не ответил (нет сети, неверный IP), возвращённый Promise отклоняется
+// ошибкой. Если сервер ответил (даже ошибкой 422 или 500), Promise выполняется.
+function postForm(url, formData) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.setRequestHeader("Accept", "application/json");
+    // Content-Type не ставим: для FormData запрос сам добавит multipart с boundary
+
+    xhr.onload = () => {
+      let data = null;
+      try {
+        data = JSON.parse(xhr.responseText);
+      } catch (e) {
+        // ответ не JSON: оставляем data = null
+      }
+      resolve({
+        ok: xhr.status >= 200 && xhr.status < 300,
+        status: xhr.status,
+        data: data,
+      });
+    };
+    xhr.onerror = () => reject(new Error("Network request failed"));
+    xhr.onabort = () => reject(new Error("Request aborted"));
+
+    xhr.send(formData);
+  });
+}
+
 export default function HomeScreen({
   lang,
   onChangeLang,
@@ -88,16 +125,10 @@ export default function HomeScreen({
       formData.append("lang", lang);
 
       // 1. Отправляем фото. Если сервер вообще не ответил (нет сети, неверный IP,
-      // сервер выключен), fetch бросает ошибку: только тогда пишем «Ошибка подключения».
+      // сервер выключен), postForm бросает ошибку: только тогда пишем «Ошибка подключения».
       let response;
       try {
-        response = await fetch(`${apiUrl}/api/read`, {
-          method: "POST",
-          body: formData,
-          headers: {
-            Accept: "application/json",
-          },
-        });
+        response = await postForm(`${apiUrl}/api/read`, formData);
       } catch (networkError) {
         Alert.alert("Ошибка / Қателік", `${t.networkError}\n\n(${networkError.message})`);
         return;
@@ -106,15 +137,18 @@ export default function HomeScreen({
       // 2. Сервер ответил ошибкой (например 422 «Не удалось прочитать, переснимите
       // рецепт»): показываем только текст от сервера, он уже на нужном языке.
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
+        // response.data — разобранный JSON ответа (или null, если это не JSON)
+        const errorData = response.data || {};
         // detail бывает не строкой (например, при ошибке проверки полей), тогда пишем код
         const text = typeof errorData.detail === "string" ? errorData.detail : `HTTP ${response.status}`;
         Alert.alert("Ошибка / Қателік", text);
         return;
       }
 
-      const data = await response.json();
-      onResultReceived(data);
+      if (!response.data) {
+        throw new Error("Сервер вернул ответ не в формате JSON");
+      }
+      onResultReceived(response.data);
     } catch (error) {
       // Непредвиденная ошибка уже после ответа сервера (например, ответ нельзя разобрать)
       Alert.alert("Ошибка / Қателік", error.message);
