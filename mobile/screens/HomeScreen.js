@@ -87,23 +87,37 @@ export default function HomeScreen({
       });
       formData.append("lang", lang);
 
-      const response = await fetch(`${apiUrl}/api/read`, {
-        method: "POST",
-        body: formData,
-        headers: {
-          Accept: "application/json",
-        },
-      });
+      // 1. Отправляем фото. Если сервер вообще не ответил (нет сети, неверный IP,
+      // сервер выключен), fetch бросает ошибку: только тогда пишем «Ошибка подключения».
+      let response;
+      try {
+        response = await fetch(`${apiUrl}/api/read`, {
+          method: "POST",
+          body: formData,
+          headers: {
+            Accept: "application/json",
+          },
+        });
+      } catch (networkError) {
+        Alert.alert("Ошибка / Қателік", `${t.networkError}\n\n(${networkError.message})`);
+        return;
+      }
 
+      // 2. Сервер ответил ошибкой (например 422 «Не удалось прочитать, переснимите
+      // рецепт»): показываем только текст от сервера, он уже на нужном языке.
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || `HTTP ${response.status}`);
+        // detail бывает не строкой (например, при ошибке проверки полей), тогда пишем код
+        const text = typeof errorData.detail === "string" ? errorData.detail : `HTTP ${response.status}`;
+        Alert.alert("Ошибка / Қателік", text);
+        return;
       }
 
       const data = await response.json();
       onResultReceived(data);
     } catch (error) {
-      Alert.alert("Ошибка / Қателік", `${t.networkError}\n\n(${error.message})`);
+      // Непредвиденная ошибка уже после ответа сервера (например, ответ нельзя разобрать)
+      Alert.alert("Ошибка / Қателік", error.message);
     } finally {
       setLoading(false);
     }
