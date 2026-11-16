@@ -22,11 +22,17 @@ import { translations } from "../translations";
 //
 // Если сервер не ответил (нет сети, неверный IP), возвращённый Promise отклоняется
 // ошибкой. Если сервер ответил (даже ошибкой 422 или 500), Promise выполняется.
+// Если сервер не ответил за REQUEST_TIMEOUT_MS, ошибка получает пометку isTimeout.
+
+// Сколько ждём ответ сервера: 60 секунд
+const REQUEST_TIMEOUT_MS = 60000;
+
 function postForm(url, formData) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", url);
     xhr.setRequestHeader("Accept", "application/json");
+    xhr.timeout = REQUEST_TIMEOUT_MS;
     // Content-Type не ставим: для FormData запрос сам добавит multipart с boundary
 
     xhr.onload = () => {
@@ -44,6 +50,11 @@ function postForm(url, formData) {
     };
     xhr.onerror = () => reject(new Error("Network request failed"));
     xhr.onabort = () => reject(new Error("Request aborted"));
+    xhr.ontimeout = () => {
+      const timeoutError = new Error("Request timed out");
+      timeoutError.isTimeout = true;
+      reject(timeoutError);
+    };
 
     xhr.send(formData);
   });
@@ -130,7 +141,12 @@ export default function HomeScreen({
       try {
         response = await postForm(`${apiUrl}/api/read`, formData);
       } catch (networkError) {
-        Alert.alert("Ошибка / Қателік", `${t.networkError}\n\n(${networkError.message})`);
+        if (networkError.isTimeout) {
+          // Сервер не ответил за 60 секунд
+          Alert.alert("Ошибка / Қателік", t.timeoutError);
+        } else {
+          Alert.alert("Ошибка / Қателік", `${t.networkError}\n\n(${networkError.message})`);
+        }
         return;
       }
 

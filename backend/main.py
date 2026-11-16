@@ -5,6 +5,7 @@ main.py — FastAPI бэкенд ReceptAI
     uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 """
 
+import logging
 import os
 import sys
 from typing import Optional
@@ -12,12 +13,21 @@ from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-from ai.reader import UNREADABLE_MESSAGE, UnreadableResponseError, read_prescription
+from ai.reader import (
+    OVERLOADED_MESSAGE,
+    UNREADABLE_MESSAGE,
+    GeminiOverloadedError,
+    UnreadableResponseError,
+    read_prescription,
+)
 from drugs.analogs import find_analogs
 from drugs.search import check_name, find_drug
 
 # Загружаем переменные окружения (.env)
 load_dotenv()
+
+# Журнал сервера: сюда пишем подробности ошибок, пользователю они не показываются
+logger = logging.getLogger("uvicorn.error")
 
 # Сколько аналогов показываем в карточке
 MAX_ANALOGS = 3
@@ -158,15 +168,25 @@ async def read_prescription_endpoint(
             status_code=422,
             detail=UNREADABLE_MESSAGE["kk"] if lang == "kk" else UNREADABLE_MESSAGE["ru"],
         )
-    except Exception as e:
-        # Ошибка сети / квоты / региона
-        error_msg = str(e)
-        detail_msg = (
-            f"Рецептті тану кезінде қате орын алды: {error_msg}"
-            if lang == "kk"
-            else f"Ошибка распознавания рецепта нейросетью: {error_msg}"
+    except GeminiOverloadedError:
+        # Gemini перегружен, а повторы и запасная модель не помогли
+        raise HTTPException(
+            status_code=503,
+            detail=OVERLOADED_MESSAGE["kk"] if lang == "kk" else OVERLOADED_MESSAGE["ru"],
         )
-        raise HTTPException(status_code=502, detail=detail_msg)
+    except Exception:
+        # Любая другая ошибка (сеть, квота, регион, неверный ключ).
+        # Подробности пишем только в журнал сервера, пользователю даём общий текст:
+        # в сыром тексте ошибки бывают технические детали, которые ему не нужны.
+        logger.exception("Ошибка распознавания рецепта")
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "Рецептті тану мүмкін болмады, қайталап көріңіз"
+                if lang == "kk"
+                else "Не удалось распознать рецепт, попробуйте ещё раз"
+            ),
+        )
 
     # 5. Проверяем каждое название, прочитанное AI, по справочнику
     # и делаем из него карточку: цена, «для чего», аналоги, match/score

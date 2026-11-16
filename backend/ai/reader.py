@@ -15,10 +15,12 @@ import io
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
 from PIL import Image
 
@@ -48,6 +50,29 @@ class UnreadableResponseError(Exception):
     def __init__(self):
         # По умолчанию сообщение на русском; main.py берёт нужный язык из UNREADABLE_MESSAGE
         super().__init__(UNREADABLE_MESSAGE["ru"])
+
+
+# Коды ответа Gemini, при которых стоит подождать и повторить: 503 (перегрузка), 429 (лимит запросов)
+OVERLOAD_CODES = (503, 429)
+
+# Сколько раз всего пробуем основную модель при перегрузке
+OVERLOAD_ATTEMPTS = 3
+
+# Пауза в секундах после 1-й и после 2-й неудачной попытки
+OVERLOAD_PAUSES = (2, 4)
+
+# Сообщение для человека, если Gemini перегружен
+OVERLOADED_MESSAGE = {
+    "ru": "Сервис распознавания перегружен, попробуйте через минуту",
+    "kk": "Тану сервисі шамадан тыс жүктелген, бір минуттан кейін қайталап көріңіз",
+}
+
+
+class GeminiOverloadedError(Exception):
+    """Gemini перегружен (503/429): основная и запасная модель не ответили."""
+
+    def __init__(self):
+        super().__init__(OVERLOADED_MESSAGE["ru"])
 
 
 def _load_prompt() -> str:
@@ -131,6 +156,43 @@ def _validate_json(text: str, strict: bool = False) -> list:
     return result
 
 
+def _ask_gemini(client, model_name, contents):
+    """
+    Один вопрос к Gemini с защитой от перегрузки.
+
+    1. Основную модель пробуем до OVERLOAD_ATTEMPTS раз (паузы 2 и 4 секунды),
+       если Gemini отвечает 503 или 429.
+    2. Если всё ещё перегружен, один раз пробуем запасную модель из GEMINI_FALLBACK_MODEL.
+    3. Если и она не ответила, бросаем GeminiOverloadedError.
+    Любая другая ошибка (неверный ключ, плохой запрос) сразу уходит наверх, без повторов.
+    Подробности ошибок пишем только в лог сервера (print), пользователь их не видит.
+    """
+    for attempt in range(1, OVERLOAD_ATTEMPTS + 1):
+        try:
+            return client.models.generate_content(model=model_name, contents=contents)
+        except genai_errors.APIError as e:
+            if e.code not in OVERLOAD_CODES:
+                raise
+            print(f"[reader] Gemini перегружен, модель {model_name}, "
+                  f"попытка {attempt} из {OVERLOAD_ATTEMPTS}: {e}")
+            # после последней попытки пауза не нужна
+            if attempt < OVERLOAD_ATTEMPTS:
+                time.sleep(OVERLOAD_PAUSES[attempt - 1])
+
+    # Основная модель не отвечает: пробуем запасную (если она задана и отличается)
+    fallback_model = os.getenv("GEMINI_FALLBACK_MODEL", "").strip()
+    if fallback_model and fallback_model != model_name:
+        print(f"[reader] Пробуем запасную модель {fallback_model}")
+        try:
+            return client.models.generate_content(model=fallback_model, contents=contents)
+        except genai_errors.APIError as e:
+            if e.code not in OVERLOAD_CODES:
+                raise
+            print(f"[reader] Запасная модель {fallback_model} тоже перегружена: {e}")
+
+    raise GeminiOverloadedError()
+
+
 def read_prescription(image_bytes: bytes) -> list:
     """
     Главная функция: отправляет фото рецепта в Gemini и возвращает список лекарств.
@@ -143,6 +205,7 @@ def read_prescription(image_bytes: bytes) -> list:
         [] если на фото нет лекарств.
 
     Если Gemini два раза подряд ответил не JSON, бросает UnreadableResponseError.
+    Если Gemini перегружен (503/429) и запасная модель тоже, бросает GeminiOverloadedError.
     """
     # Проверяем размер фото
     if len(image_bytes) > MAX_PHOTO_BYTES:
@@ -171,12 +234,14 @@ def read_prescription(image_bytes: bytes) -> list:
     client = genai.Client(api_key=api_key)
 
     # Спрашиваем Gemini. Если ответ не JSON, повторяем запрос (всего MAX_ATTEMPTS раз).
-    # Ошибки сети и ключа не повторяем: они сразу уходят наверх.
+    # Другие ошибки (ключ, плохой запрос) не повторяем: они сразу уходят наверх.
     for attempt in range(1, MAX_ATTEMPTS + 1):
         # Формируем запрос: картинка + текст инструкции
-        response = client.models.generate_content(
-            model=model_name,
-            contents=[
+        # (при перегрузке Gemini _ask_gemini сама повторяет и пробует запасную модель)
+        response = _ask_gemini(
+            client,
+            model_name,
+            [
                 types.Part.from_bytes(data=jpeg_bytes, mime_type="image/jpeg"),
                 prompt,
             ],
