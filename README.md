@@ -159,7 +159,7 @@ ReceptAI/
 │   │   ├── test_search.py     # проверка нечёткого поиска
 │   │   └── accuracy.py        # прогон точности на 30 рецептах
 │   ├── requirements.txt
-│   └── .env.example           # шаблон: GEMINI_API_KEY=, GEMINI_MODEL=, MATCH_THRESHOLD=85
+│   └── .env.example           # шаблон: GEMINI_API_KEY=, GEMINI_MODEL=, DRUG_MATCH_THRESHOLD=85
 ├── mobile/                    # Мобильное приложение Expo
 │   ├── App.js                 # корневой компонент, навигация
 │   ├── screens/

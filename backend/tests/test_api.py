@@ -97,3 +97,39 @@ def test_read_prescription_unsupported_ext():
         data={"lang": "ru"},
     )
     assert response.status_code == 400
+
+
+@patch("main.read_prescription")
+def test_read_prescription_adds_match_and_score(mock_read):
+    # AI прочитал три названия: с опечаткой, сомнительное и бессмыслицу.
+    # Сервер должен проверить их по справочнику и добавить match, score, note.
+    mock_read.return_value = [
+        {"name": "Амоксицилин", "form": "капсулы", "dose": None,
+         "frequency": None, "duration": None, "sure": True},
+        {"name": "Азотроп", "form": "капли", "dose": None,
+         "frequency": None, "duration": None, "sure": False},
+        {"name": "Кшфгх", "form": None, "dose": None,
+         "frequency": None, "duration": None, "sure": False},
+    ]
+
+    dummy_image = io.BytesIO(b"\xff\xd8\xff\xe0\x00\x10JFIF" + b"0" * 50)
+    response = client.post(
+        "/api/read",
+        files={"photo": ("recept.jpg", dummy_image, "image/jpeg")},
+        data={"lang": "ru"},
+    )
+    assert response.status_code == 200
+    found, unsure, nonsense = response.json()["drugs"]
+
+    # Уверенно найдено: название из справочника, предупреждения нет
+    assert found["match"] == "Амоксициллин"
+    assert found["score"] >= 85
+    assert found["note"] is None
+
+    # Ниже порога: match пустой, но есть подсказка «возможно это …»
+    assert unsure["match"] is None
+    assert "Не уверен, возможно это «Атропин»" in unsure["note"]
+
+    # Бессмыслица: не найдено
+    assert nonsense["match"] is None
+    assert nonsense["score"] < 85

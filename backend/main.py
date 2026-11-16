@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 from ai.reader import read_prescription
+from drugs.search import check_name
 
 # Загружаем переменные окружения (.env)
 load_dotenv()
@@ -111,7 +112,18 @@ async def read_prescription_endpoint(
         )
         raise HTTPException(status_code=502, detail=detail_msg)
 
-    # 5. Возвращаем распознанные лекарства
+    # 5. Проверяем каждое название, прочитанное AI, по справочнику лекарств.
+    # К каждому лекарству добавляем поля:
+    #   match — название из справочника (или None, если не нашли)
+    #   score — похожесть от 0 до 100
+    #   note  — пояснение «Не уверен, возможно это …» (или None, если всё хорошо)
+    for drug in drugs:
+        result = check_name(drug.get("name"), lang)
+        drug["match"] = result["match"]
+        drug["score"] = result["score"]
+        drug["note"] = result["note"]
+
+    # 6. Возвращаем распознанные лекарства
     message = (
         f"Рецепт сәтті танылды! {len(drugs)} дәрі табылды."
         if lang == "kk"
