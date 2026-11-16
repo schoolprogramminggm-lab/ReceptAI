@@ -18,6 +18,7 @@ import sys
 import time
 from pathlib import Path
 
+import httpx
 from dotenv import load_dotenv
 from google import genai
 from google.genai import errors as genai_errors
@@ -60,6 +61,19 @@ OVERLOAD_ATTEMPTS = 3
 
 # Пауза в секундах после 1-й и после 2-й неудачной попытки
 OVERLOAD_PAUSES = (2, 4)
+
+# Сколько секунд ждём ответ на ОДИН вызов Gemini, если в .env нет GEMINI_TIMEOUT_SEC
+DEFAULT_CALL_TIMEOUT_SEC = 25
+
+# Весь запрос к Gemini (все попытки, паузы и запасная модель) должен уложиться в это время.
+# У приложения таймаут 60 секунд, поэтому оставляем запас
+TOTAL_TIMEOUT_SEC = 55
+
+# Если до конца общего времени осталось меньше этого, новый вызов уже не начинаем
+MIN_CALL_TIMEOUT_SEC = 1
+
+# 504 = Gemini сам прервал слишком долгий запрос. Считаем это таким же «зависанием», как таймаут
+SERVER_TIMEOUT_CODES = (504,)
 
 # Сообщение для человека, если Gemini перегружен
 OVERLOADED_MESSAGE = {
@@ -184,37 +198,89 @@ def _validate_json(text: str, strict: bool = False) -> list:
     return result
 
 
-def _ask_gemini(client, model_name, contents):
+def _now():
+    """Текущее время в секундах (для подсчёта оставшегося времени). Вынесено для тестов."""
+    return time.monotonic()
+
+
+def get_call_timeout():
+    """Сколько секунд ждать один вызов Gemini: GEMINI_TIMEOUT_SEC из .env, по умолчанию 25."""
+    try:
+        seconds = float(os.getenv("GEMINI_TIMEOUT_SEC", ""))
+    except ValueError:
+        return DEFAULT_CALL_TIMEOUT_SEC
+    # ноль и отрицательные числа не имеют смысла
+    return seconds if seconds > 0 else DEFAULT_CALL_TIMEOUT_SEC
+
+
+def _generate(client, model_name, contents, deadline):
     """
-    Один вопрос к Gemini с защитой от перегрузки.
+    Один вызов Gemini с таймаутом.
+
+    Таймаут = GEMINI_TIMEOUT_SEC, но не больше, чем осталось до deadline (общего срока),
+    поэтому весь запрос в сумме не длиннее TOTAL_TIMEOUT_SEC.
+    Если Gemini не ответил вовремя, библиотека бросает httpx.TimeoutException.
+    """
+    left = deadline - _now()
+    if left < MIN_CALL_TIMEOUT_SEC:
+        # общее время вышло, новый вызов не начинаем
+        print(f"[reader] Общее время {TOTAL_TIMEOUT_SEC} с вышло, модель {model_name} не вызываем")
+        raise GeminiOverloadedError()
+
+    timeout = min(get_call_timeout(), left)
+    # В настройках библиотеки таймаут задаётся в миллисекундах
+    config = types.GenerateContentConfig(
+        http_options=types.HttpOptions(timeout=int(timeout * 1000))
+    )
+    return client.models.generate_content(model=model_name, contents=contents, config=config)
+
+
+def _ask_gemini(client, model_name, contents, deadline=None):
+    """
+    Один вопрос к Gemini с защитой от перегрузки и зависания.
 
     1. Основную модель пробуем до OVERLOAD_ATTEMPTS раз (паузы 2 и 4 секунды),
        если Gemini отвечает 503 или 429.
-    2. Если всё ещё перегружен, один раз пробуем запасную модель из GEMINI_FALLBACK_MODEL.
-    3. Если и она не ответила, бросаем GeminiOverloadedError.
+    2. Если Gemini не ответил за GEMINI_TIMEOUT_SEC (или ответил 504), повторять
+       основную модель нет смысла: сразу переходим к запасной.
+    3. Запасную модель из GEMINI_FALLBACK_MODEL пробуем один раз.
+    4. Если и она не ответила, бросаем GeminiOverloadedError.
     Любая другая ошибка (неверный ключ, плохой запрос) сразу уходит наверх, без повторов.
     Подробности ошибок пишем только в лог сервера (print), пользователь их не видит.
+
+    deadline — момент, к которому всё должно закончиться (по умолчанию через TOTAL_TIMEOUT_SEC).
     """
+    if deadline is None:
+        deadline = _now() + TOTAL_TIMEOUT_SEC
+
     for attempt in range(1, OVERLOAD_ATTEMPTS + 1):
         try:
-            return client.models.generate_content(model=model_name, contents=contents)
+            return _generate(client, model_name, contents, deadline)
+        except httpx.TimeoutException:
+            print(f"[reader] Gemini не ответил вовремя, модель {model_name}")
+            break  # повторять зависшую модель бессмысленно: сразу запасная
         except genai_errors.APIError as e:
+            if e.code in SERVER_TIMEOUT_CODES:
+                print(f"[reader] Gemini прервал долгий запрос ({e.code}), модель {model_name}")
+                break
             if e.code not in OVERLOAD_CODES:
                 raise
             print(f"[reader] Gemini перегружен, модель {model_name}, "
                   f"попытка {attempt} из {OVERLOAD_ATTEMPTS}: {e}")
-            # после последней попытки пауза не нужна
+            # после последней попытки пауза не нужна; паузу не делаем длиннее, чем осталось времени
             if attempt < OVERLOAD_ATTEMPTS:
-                time.sleep(OVERLOAD_PAUSES[attempt - 1])
+                time.sleep(min(OVERLOAD_PAUSES[attempt - 1], max(0, deadline - _now())))
 
     # Основная модель не отвечает: пробуем запасную (если она задана и отличается)
     fallback_model = os.getenv("GEMINI_FALLBACK_MODEL", "").strip()
     if fallback_model and fallback_model != model_name:
         print(f"[reader] Пробуем запасную модель {fallback_model}")
         try:
-            return client.models.generate_content(model=fallback_model, contents=contents)
+            return _generate(client, fallback_model, contents, deadline)
+        except httpx.TimeoutException:
+            print(f"[reader] Запасная модель {fallback_model} тоже не ответила вовремя")
         except genai_errors.APIError as e:
-            if e.code not in OVERLOAD_CODES:
+            if e.code not in OVERLOAD_CODES + SERVER_TIMEOUT_CODES:
                 raise
             print(f"[reader] Запасная модель {fallback_model} тоже перегружена: {e}")
 
@@ -233,7 +299,8 @@ def read_prescription(image_bytes: bytes) -> list:
         [] если на фото нет лекарств.
 
     Если Gemini два раза подряд ответил не JSON, бросает UnreadableResponseError.
-    Если Gemini перегружен (503/429) и запасная модель тоже, бросает GeminiOverloadedError.
+    Если Gemini перегружен (503/429) или не отвечает (таймаут) и запасная модель тоже,
+    бросает GeminiOverloadedError. Весь запрос длится не дольше TOTAL_TIMEOUT_SEC секунд.
     Если файл не открывается как изображение, бросает InvalidImageError.
     """
     # Проверяем размер фото
@@ -262,9 +329,17 @@ def read_prescription(image_bytes: bytes) -> list:
     # Инициализируем клиент Gemini
     client = genai.Client(api_key=api_key)
 
+    # Общий срок на все обращения к Gemini: уложиться в TOTAL_TIMEOUT_SEC секунд
+    deadline = _now() + TOTAL_TIMEOUT_SEC
+
     # Спрашиваем Gemini. Если ответ не JSON, повторяем запрос (всего MAX_ATTEMPTS раз).
     # Другие ошибки (ключ, плохой запрос) не повторяем: они сразу уходят наверх.
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        # Повторять из-за не-JSON ответа, когда время почти вышло, уже поздно
+        if attempt > 1 and deadline - _now() < MIN_CALL_TIMEOUT_SEC:
+            print("[reader] Время вышло, повторный запрос из-за не-JSON ответа не делаем")
+            break
+
         # Формируем запрос: картинка + текст инструкции
         # (при перегрузке Gemini _ask_gemini сама повторяет и пробует запасную модель)
         response = _ask_gemini(
@@ -274,6 +349,7 @@ def read_prescription(image_bytes: bytes) -> list:
                 types.Part.from_bytes(data=jpeg_bytes, mime_type="image/jpeg"),
                 prompt,
             ],
+            deadline,
         )
 
         # Получаем текст ответа
