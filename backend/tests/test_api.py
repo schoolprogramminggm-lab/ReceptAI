@@ -3,6 +3,7 @@
 - GET /api/health
 - POST /api/read (с моком Gemini reader и проверкой структуры ответа)
 - Проверка разделения полей (form, dose, frequency, duration)
+- Карточки лекарств: цена, аналоги, «как написал врач», disclaimer на kk и ru
 """
 
 import io
@@ -133,3 +134,80 @@ def test_read_prescription_adds_match_and_score(mock_read):
     # Бессмыслица: не найдено
     assert nonsense["match"] is None
     assert nonsense["score"] < 85
+
+
+@patch("main.read_prescription")
+def test_read_prescription_two_drug_cards(mock_read):
+    # Рецепт с двумя лекарствами. Gemini замокан, в сеть мы не ходим.
+    # Дозу, схему и курс пишем «неаккуратно»: сервер должен вернуть их без изменений.
+    mock_read.return_value = [
+        {"name": "Азитромицин", "form": "капс.", "dose": "по 1  капс.",
+         "frequency": "1 р/д  утром", "duration": "3 дн.", "sure": True},
+        {"name": "Амоксиклав", "form": "таб.", "dose": "625 мг",
+         "frequency": "2 раза в день", "duration": "7 дней", "sure": True},
+    ]
+
+    dummy_image = io.BytesIO(b"\xff\xd8\xff\xe0\x00\x10JFIF" + b"0" * 50)
+    response = client.post(
+        "/api/read",
+        files={"photo": ("recept.jpg", dummy_image, "image/jpeg")},
+        data={"lang": "ru"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    # Две карточки
+    cards = data["drugs"]
+    assert len(cards) == 2
+
+    for card in cards:
+        # название из справочника, «для чего» и цена
+        assert card["match"] is not None
+        assert card["name"] == card["match"]
+        assert card["indication"]
+        assert isinstance(card["price_kzt"], int) and card["price_kzt"] > 0
+        assert card["unsure_message"] is None
+
+        # аналоги: от 1 до 3, у каждого название и цена, по возрастанию цены
+        assert 1 <= len(card["analogs"]) <= 3
+        for analog in card["analogs"]:
+            assert analog["name"] != card["name"]
+            assert isinstance(analog["price_kzt"], int)
+        prices = [a["price_kzt"] for a in card["analogs"]]
+        assert prices == sorted(prices)
+
+    # «Как написал врач»: ровно как прочитал AI
+    assert cards[0]["dose"] == "по 1  капс."
+    assert cards[0]["frequency"] == "1 р/д  утром"
+    assert cards[0]["duration"] == "3 дн."
+    assert cards[1]["dose"] == "625 мг"
+    assert cards[1]["frequency"] == "2 раза в день"
+    assert cards[1]["duration"] == "7 дней"
+
+    # Предупреждение на двух языках
+    assert "Замену согласуйте с врачом или фармацевтом" in data["disclaimer"]["ru"]
+    assert data["disclaimer"]["kk"]
+
+
+@patch("main.read_prescription")
+def test_unsure_card_has_no_price_and_analogs(mock_read):
+    # Название не уверенно найдено в справочнике: цену и аналоги не показываем,
+    # а даём подсказку unsure_message
+    mock_read.return_value = [
+        {"name": "Азотроп", "form": "капли", "dose": "1 капля",
+         "frequency": "2 раза в день", "duration": "7 дней", "sure": False},
+    ]
+
+    dummy_image = io.BytesIO(b"\xff\xd8\xff\xe0\x00\x10JFIF" + b"0" * 50)
+    response = client.post(
+        "/api/read",
+        files={"photo": ("recept.jpg", dummy_image, "image/jpeg")},
+        data={"lang": "ru"},
+    )
+    card = response.json()["drugs"][0]
+    assert card["name"] == "Азотроп"            # остаётся как прочитал AI
+    assert card["match"] is None
+    assert card["price_kzt"] is None
+    assert card["analogs"] == []
+    assert "Не уверен, возможно это" in card["unsure_message"]
+    assert card["dose"] == "1 капля"

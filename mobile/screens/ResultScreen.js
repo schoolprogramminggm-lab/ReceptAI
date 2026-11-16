@@ -39,6 +39,13 @@ export default function ResultScreen({ result, lang, onBack }) {
             </View>
           </View>
 
+          {/* Если не уверены — подсказка от сервера (уже на нужном языке) */}
+          {drug.unsure_message && (
+            <View style={styles.unsureBox}>
+              <Text style={styles.unsureText}>⚠️ {drug.unsure_message}</Text>
+            </View>
+          )}
+
           {drug.form && (
             <View style={styles.row}>
               <Text style={styles.label}>{t.formLabel}:</Text>
@@ -46,33 +53,73 @@ export default function ResultScreen({ result, lang, onBack }) {
             </View>
           )}
 
-          {drug.dose && (
+          {/* «Для чего» берётся из справочника. В справочнике текст только на русском */}
+          {drug.indication && (
             <View style={styles.row}>
-              <Text style={styles.label}>{t.doseLabel}:</Text>
-              <Text style={styles.val}>{drug.dose}</Text>
+              <Text style={styles.label}>{t.indicationLabel}:</Text>
+              <Text style={styles.val}>{drug.indication}</Text>
             </View>
           )}
 
-          {drug.frequency && (
-            <View style={styles.row}>
-              <Text style={styles.label}>{t.freqLabel}:</Text>
-              <Text style={styles.val}>{drug.frequency}</Text>
+          {/* Как написал врач: показываем ровно то, что прочитал AI */}
+          {(drug.dose || drug.frequency || drug.duration) && (
+            <View style={styles.doctorBox}>
+              <Text style={styles.doctorTitle}>{t.writtenByDoctor}</Text>
+              {drug.dose && (
+                <View style={styles.row}>
+                  <Text style={styles.label}>{t.doseLabel}:</Text>
+                  <Text style={styles.val}>{drug.dose}</Text>
+                </View>
+              )}
+              {drug.frequency && (
+                <View style={styles.row}>
+                  <Text style={styles.label}>{t.freqLabel}:</Text>
+                  <Text style={styles.val}>{drug.frequency}</Text>
+                </View>
+              )}
+              {drug.duration && (
+                <View style={styles.row}>
+                  <Text style={styles.label}>{t.durLabel}:</Text>
+                  <Text style={styles.val}>{drug.duration}</Text>
+                </View>
+              )}
             </View>
           )}
 
-          {drug.duration && (
-            <View style={styles.row}>
-              <Text style={styles.label}>{t.durLabel}:</Text>
-              <Text style={styles.val}>{drug.duration}</Text>
+          {/* Цена и аналоги показываются, только если лекарство найдено в справочнике */}
+          {drug.price_kzt != null ? (
+            <View>
+              <View style={styles.row}>
+                <Text style={styles.label}>💰 {t.priceLabel}:</Text>
+                <Text style={styles.price}>
+                  {drug.price_kzt} {t.currency}
+                </Text>
+              </View>
+
+              <Text style={styles.analogsTitle}>💊 {t.analogsLabel}:</Text>
+              {drug.analogs && drug.analogs.length > 0 ? (
+                drug.analogs.map((analog, i) => (
+                  <View key={i} style={styles.analogRow}>
+                    <Text style={styles.analogName}>{analog.name}</Text>
+                    <Text style={styles.analogPrice}>
+                      {analog.price_kzt} {t.currency}
+                    </Text>
+                  </View>
+                ))
+              ) : (
+                <Text style={styles.noAnalogs}>{t.noAnalogs}</Text>
+              )}
             </View>
-          )}
+          ) : null}
         </View>
       ))}
 
-      {/* Обязательный медицинский дисклеймер */}
+      {/* Обязательный медицинский дисклеймер на выбранном языке (kk/ru) */}
       <View style={styles.disclaimerCard}>
         <Text style={styles.disclaimerTitle}>⚠️ {t.disclaimerTitle}</Text>
-        <Text style={styles.disclaimerBody}>{result?.disclaimer || t.disclaimerText}</Text>
+        <Text style={styles.disclaimerBody}>
+          {result?.disclaimer?.[lang || "ru"] || t.disclaimerText}
+        </Text>
       </View>
     </ScrollView>
   );
@@ -192,6 +239,60 @@ const styles = StyleSheet.create({
     color: "#1E293B",
     fontWeight: "600",
   },
+  unsureBox: {
+    backgroundColor: "#FEF3C7",
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 6,
+  },
+  unsureText: {
+    fontSize: 14,
+    color: "#92400E",
+    fontWeight: "600",
+  },
+  doctorBox: {
+    backgroundColor: "#F1F5F9",
+    borderRadius: 10,
+    padding: 10,
+    marginTop: 10,
+  },
+  doctorTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#334155",
+  },
+  price: {
+    flex: 1,
+    fontSize: 16,
+    color: "#047857",
+    fontWeight: "700",
+  },
+  analogsTitle: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#64748B",
+    marginTop: 12,
+    marginBottom: 4,
+  },
+  analogRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingVertical: 4,
+  },
+  analogName: {
+    fontSize: 14,
+    color: "#1E293B",
+    flex: 1,
+  },
+  analogPrice: {
+    fontSize: 14,
+    color: "#047857",
+    fontWeight: "600",
+  },
+  noAnalogs: {
+    fontSize: 13,
+    color: "#94A3B8",
+  },
   disclaimerCard: {
     backgroundColor: "#FEF2F2",
     borderColor: "#FCA5A5",
@@ -212,3 +313,4 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
 });
+

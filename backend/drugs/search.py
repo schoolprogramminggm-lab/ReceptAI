@@ -68,6 +68,12 @@ def load_drugs():
                 _search_owner.append(row)
 
 
+def all_drugs():
+    """Весь справочник списком (нужен для поиска аналогов в analogs.py)."""
+    load_drugs()
+    return _drugs
+
+
 def find_closest(name):
     """
     Находит в справочнике самое похожее лекарство БЕЗ учёта порога.

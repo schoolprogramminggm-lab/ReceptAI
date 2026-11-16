@@ -13,10 +13,60 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 from ai.reader import read_prescription
-from drugs.search import check_name
+from drugs.analogs import find_analogs
+from drugs.search import check_name, find_drug
 
 # Загружаем переменные окружения (.env)
 load_dotenv()
+
+# Сколько аналогов показываем в карточке
+MAX_ANALOGS = 3
+
+# Предупреждение на двух языках. Приложение само выбирает нужный по языку пользователя.
+DISCLAIMER = {
+    "kk": "Бұл дәрігер кеңесін алмастырмайды. Алмастыруды дәрігермен немесе фармацевтпен келісіңіз.",
+    "ru": "Это не замена консультации врача. Замену согласуйте с врачом или фармацевтом.",
+}
+
+
+def make_card(read, lang):
+    """
+    Делает карточку лекарства из того, что прочитал AI.
+
+    read — словарь от AI: name, form, dose, frequency, duration, sure
+    Если лекарство уверенно найдено в справочнике, берём из него название, форму,
+    «для чего», цену и аналоги. Если нет, цену и аналоги не показываем:
+    не угадываем лекарство, а даём подсказку unsure_message.
+    """
+    check = check_name(read.get("name"), lang)  # match, score, note
+
+    # Строка справочника нужна только если лекарство найдено уверенно
+    row = None
+    if check["match"]:
+        row, _ = find_drug(read.get("name"))
+
+    analogs = []
+    if row:
+        for a in find_analogs(row)[:MAX_ANALOGS]:
+            analogs.append({"name": a["trade_name"], "price_kzt": int(float(a["price_kzt"]))})
+
+    return {
+        # из справочника, если нашли, иначе как прочитал AI
+        "name": row["trade_name"] if row else read.get("name"),
+        "form": row["form"] if row else read.get("form"),
+        "indication": row["indication"] if row else None,  # «для чего»
+        # «как написал врач»: ровно как прочитал AI, ничего не меняем
+        "dose": read.get("dose"),
+        "frequency": read.get("frequency"),
+        "duration": read.get("duration"),
+        "sure": read.get("sure"),
+        "price_kzt": int(float(row["price_kzt"])) if row else None,
+        "analogs": analogs,
+        "match": check["match"],
+        "score": check["score"],
+        "note": check["note"],             # оставлено как раньше
+        "unsure_message": check["note"],   # «Не уверен, возможно это …» (None, если всё хорошо)
+    }
 
 app = FastAPI(
     title="ReceptAI API",
@@ -112,16 +162,9 @@ async def read_prescription_endpoint(
         )
         raise HTTPException(status_code=502, detail=detail_msg)
 
-    # 5. Проверяем каждое название, прочитанное AI, по справочнику лекарств.
-    # К каждому лекарству добавляем поля:
-    #   match — название из справочника (или None, если не нашли)
-    #   score — похожесть от 0 до 100
-    #   note  — пояснение «Не уверен, возможно это …» (или None, если всё хорошо)
-    for drug in drugs:
-        result = check_name(drug.get("name"), lang)
-        drug["match"] = result["match"]
-        drug["score"] = result["score"]
-        drug["note"] = result["note"]
+    # 5. Проверяем каждое название, прочитанное AI, по справочнику
+    # и делаем из него карточку: цена, «для чего», аналоги, match/score
+    drugs = [make_card(drug, lang) for drug in drugs]
 
     # 6. Возвращаем распознанные лекарства
     message = (
@@ -137,17 +180,11 @@ async def read_prescription_endpoint(
             else "На фото не найдено лекарств или почерк не удалось разобрать. Попробуйте более четкое фото."
         )
 
-    disclaimer = (
-        "Бұл дәрігер кеңесін алмастырмайды. Дәрі-дәрмекті қабылдамас бұрын маманмен кеңесіңіз."
-        if lang == "kk"
-        else "Это не замена консультации врача. Обязательно уточните у врача или фармацевта."
-    )
-
     return {
         "success": True,
         "message": message,
         "received_size_kb": round(len(image_bytes) / 1024, 1),
         "lang": lang,
         "drugs": drugs,
-        "disclaimer": disclaimer,
+        "disclaimer": DISCLAIMER,  # сразу на двух языках: {"kk": ..., "ru": ...}
     }
