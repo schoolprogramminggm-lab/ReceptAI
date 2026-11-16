@@ -32,6 +32,24 @@ MAX_PHOTO_BYTES = 8 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".heic"}
 
 
+# Сколько раз всего спрашиваем Gemini, если ответ — не JSON (1 запрос + 1 повтор)
+MAX_ATTEMPTS = 2
+
+# Сообщение для человека, если Gemini дважды ответил не JSON
+UNREADABLE_MESSAGE = {
+    "ru": "Не удалось прочитать, переснимите рецепт",
+    "kk": "Оқу мүмкін болмады, рецептті қайта суретке түсіріңіз",
+}
+
+
+class UnreadableResponseError(Exception):
+    """Gemini ответил не JSON (даже после повтора). Фото нужно переснять."""
+
+    def __init__(self):
+        # По умолчанию сообщение на русском; main.py берёт нужный язык из UNREADABLE_MESSAGE
+        super().__init__(UNREADABLE_MESSAGE["ru"])
+
+
 def _load_prompt() -> str:
     """Читает инструкцию для Gemini из prompt.txt."""
     # Путь к prompt.txt находится в той же папке, что и этот файл
@@ -58,10 +76,14 @@ def _convert_to_jpeg(image_bytes: bytes) -> bytes:
     return output.getvalue()
 
 
-def _validate_json(text: str) -> list:
+def _validate_json(text: str, strict: bool = False) -> list:
     """
     Проверяет, что ответ Gemini — это правильный JSON-массив.
     Возвращает список лекарств или [] если что-то пошло не так.
+
+    strict=True: если ответ не JSON-массив, бросаем UnreadableResponseError
+    (так read_prescription узнаёт, что нужен повтор). Пустой массив [] — это
+    нормальный ответ «лекарств на фото нет», а не ошибка.
     """
     # Иногда модель добавляет ```json ... ``` — убираем это
     text = text.strip()
@@ -75,11 +97,15 @@ def _validate_json(text: str) -> list:
     except json.JSONDecodeError as e:
         print(f"[reader] Ошибка разбора JSON: {e}")
         print(f"[reader] Ответ модели: {text[:200]}")
+        if strict:
+            raise UnreadableResponseError()
         return []
 
     # Проверяем что это список
     if not isinstance(data, list):
         print(f"[reader] Ответ не является списком: {type(data)}")
+        if strict:
+            raise UnreadableResponseError()
         return []
 
     # Проверяем каждый элемент — должны быть обязательные поля
@@ -114,7 +140,9 @@ def read_prescription(image_bytes: bytes) -> list:
 
     Возвращает:
         Список словарей с полями: name, form, dose, frequency, duration, sure
-        Или [] если не удалось прочитать.
+        [] если на фото нет лекарств.
+
+    Если Gemini два раза подряд ответил не JSON, бросает UnreadableResponseError.
     """
     # Проверяем размер фото
     if len(image_bytes) > MAX_PHOTO_BYTES:
@@ -142,22 +170,29 @@ def read_prescription(image_bytes: bytes) -> list:
     # Инициализируем клиент Gemini
     client = genai.Client(api_key=api_key)
 
-    # Формируем запрос: картинка + текст инструкции
-    response = client.models.generate_content(
-        model=model_name,
-        contents=[
-            types.Part.from_bytes(data=jpeg_bytes, mime_type="image/jpeg"),
-            prompt,
-        ],
-    )
+    # Спрашиваем Gemini. Если ответ не JSON, повторяем запрос (всего MAX_ATTEMPTS раз).
+    # Ошибки сети и ключа не повторяем: они сразу уходят наверх.
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        # Формируем запрос: картинка + текст инструкции
+        response = client.models.generate_content(
+            model=model_name,
+            contents=[
+                types.Part.from_bytes(data=jpeg_bytes, mime_type="image/jpeg"),
+                prompt,
+            ],
+        )
 
-    # Получаем текст ответа
-    answer = response.text if response.text else ""
+        # Получаем текст ответа
+        answer = response.text if response.text else ""
 
-    # Разбираем JSON из ответа
-    drugs = _validate_json(answer)
+        # Разбираем JSON из ответа; если это не JSON, получим UnreadableResponseError
+        try:
+            return _validate_json(answer, strict=True)
+        except UnreadableResponseError:
+            print(f"[reader] Ответ не JSON (попытка {attempt} из {MAX_ATTEMPTS})")
 
-    return drugs
+    # Обе попытки закончились не-JSON ответом
+    raise UnreadableResponseError()
 
 
 # ──────────────────────────────────────────────────

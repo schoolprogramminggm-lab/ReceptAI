@@ -12,7 +12,7 @@ from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-from ai.reader import read_prescription
+from ai.reader import UNREADABLE_MESSAGE, UnreadableResponseError, read_prescription
 from drugs.analogs import find_analogs
 from drugs.search import check_name, find_drug
 
@@ -151,6 +151,12 @@ async def read_prescription_endpoint(
                 if lang == "kk"
                 else "На сервере не настроен GEMINI_API_KEY"
             ),
+        )
+    except UnreadableResponseError:
+        # Gemini дважды ответил не JSON: просим переснять рецепт (kk/ru)
+        raise HTTPException(
+            status_code=422,
+            detail=UNREADABLE_MESSAGE["kk"] if lang == "kk" else UNREADABLE_MESSAGE["ru"],
         )
     except Exception as e:
         # Ошибка сети / квоты / региона
