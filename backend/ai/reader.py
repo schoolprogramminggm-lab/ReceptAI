@@ -75,6 +75,28 @@ class GeminiOverloadedError(Exception):
         super().__init__(OVERLOADED_MESSAGE["ru"])
 
 
+# Сообщение для человека, если файл не открывается как изображение
+INVALID_IMAGE_MESSAGE = {
+    "ru": "Это не фото рецепта, выберите другое изображение",
+    "kk": "Бұл рецепт суреті емес, басқа сурет таңдаңыз",
+}
+
+
+class InvalidImageError(Exception):
+    """Файл не удалось открыть как изображение (битый файл или не картинка)."""
+
+    def __init__(self):
+        super().__init__(INVALID_IMAGE_MESSAGE["ru"])
+
+
+class MissingApiKeyError(EnvironmentError):
+    """В .env не задан GEMINI_API_KEY.
+
+    Отдельный класс нужен, чтобы сервер не путал эту ошибку с другими OSError
+    (например, «файл не картинка»): в Python EnvironmentError и OSError — одно и то же.
+    """
+
+
 def _load_prompt() -> str:
     """Читает инструкцию для Gemini из prompt.txt."""
     # Путь к prompt.txt находится в той же папке, что и этот файл
@@ -88,16 +110,22 @@ def _convert_to_jpeg(image_bytes: bytes) -> bytes:
     Нужно для HEIC и PNG — Gemini лучше всего работает с JPEG.
     Фото нигде не сохраняется, только в памяти.
     """
-    # Открываем изображение из байтов (не из файла!)
-    img = Image.open(io.BytesIO(image_bytes))
+    try:
+        # Открываем изображение из байтов (не из файла!)
+        img = Image.open(io.BytesIO(image_bytes))
 
-    # Переводим в RGB — JPEG не поддерживает прозрачность (RGBA)
-    if img.mode in ("RGBA", "P", "LA"):
-        img = img.convert("RGB")
+        # Переводим в RGB — JPEG не поддерживает прозрачность (RGBA)
+        if img.mode in ("RGBA", "P", "LA"):
+            img = img.convert("RGB")
 
-    # Сохраняем обратно в байты как JPEG
-    output = io.BytesIO()
-    img.save(output, format="JPEG", quality=85)
+        # Сохраняем обратно в байты как JPEG
+        output = io.BytesIO()
+        img.save(output, format="JPEG", quality=85)
+    except (OSError, Image.DecompressionBombError) as e:
+        # Pillow бросает UnidentifiedImageError (это OSError), если файл не картинка,
+        # и OSError, если картинка обрезана или повреждена
+        print(f"[reader] Не удалось открыть изображение: {e}")
+        raise InvalidImageError() from e
     return output.getvalue()
 
 
@@ -206,6 +234,7 @@ def read_prescription(image_bytes: bytes) -> list:
 
     Если Gemini два раза подряд ответил не JSON, бросает UnreadableResponseError.
     Если Gemini перегружен (503/429) и запасная модель тоже, бросает GeminiOverloadedError.
+    Если файл не открывается как изображение, бросает InvalidImageError.
     """
     # Проверяем размер фото
     if len(image_bytes) > MAX_PHOTO_BYTES:
@@ -219,7 +248,7 @@ def read_prescription(image_bytes: bytes) -> list:
     model_name = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 
     if not api_key:
-        raise EnvironmentError(
+        raise MissingApiKeyError(
             "GEMINI_API_KEY не задан. "
             "Скопируйте backend/.env.example в backend/.env и вставьте ключ."
         )

@@ -5,6 +5,7 @@ main.py — FastAPI бэкенд ReceptAI
     uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 """
 
+import asyncio
 import logging
 import os
 import sys
@@ -14,9 +15,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 from ai.reader import (
+    INVALID_IMAGE_MESSAGE,
     OVERLOADED_MESSAGE,
     UNREADABLE_MESSAGE,
     GeminiOverloadedError,
+    InvalidImageError,
+    MissingApiKeyError,
     UnreadableResponseError,
     read_prescription,
 )
@@ -151,8 +155,11 @@ async def read_prescription_endpoint(
 
     # 4. Отправляем в Gemini AI на чтение рукописного текста
     try:
-        drugs = read_prescription(image_bytes)
-    except EnvironmentError as e:
+        # read_prescription ждёт ответ Gemini и делает паузы между повторами (time.sleep).
+        # Если вызвать её прямо здесь, весь сервер замрёт для других пользователей.
+        # asyncio.to_thread запускает её в отдельном потоке, а сервер тем временем работает.
+        drugs = await asyncio.to_thread(read_prescription, image_bytes)
+    except MissingApiKeyError:
         # Не настроен API-ключ на сервере
         raise HTTPException(
             status_code=500,
@@ -161,6 +168,12 @@ async def read_prescription_endpoint(
                 if lang == "kk"
                 else "На сервере не настроен GEMINI_API_KEY"
             ),
+        )
+    except InvalidImageError:
+        # Файл не открывается как изображение (битый файл или не картинка)
+        raise HTTPException(
+            status_code=400,
+            detail=INVALID_IMAGE_MESSAGE["kk"] if lang == "kk" else INVALID_IMAGE_MESSAGE["ru"],
         )
     except UnreadableResponseError:
         # Gemini дважды ответил не JSON: просим переснять рецепт (kk/ru)
