@@ -47,7 +47,7 @@ def test_garbage_then_json_succeeds(monkeypatch):
     # Первый ответ мусор, второй JSON: повтор сработал, результат получен
     fake_client = fake_gemini(monkeypatch, [GARBAGE, GOOD_JSON])
 
-    drugs = read_prescription(make_png())
+    drugs = read_prescription(make_png())["drugs"]
 
     assert len(drugs) == 1
     assert drugs[0]["name"] == "Атропин"
@@ -76,14 +76,14 @@ def test_good_json_first_time_no_retry(monkeypatch):
 def test_empty_array_is_not_an_error(monkeypatch):
     # «[]» — это правильный JSON («лекарств на фото нет»), повтор не нужен
     fake_client = fake_gemini(monkeypatch, ["[]"])
-    assert read_prescription(make_png()) == []
+    assert read_prescription(make_png())["drugs"] == []
     assert fake_client.models.generate_content.call_count == 1
 
 
 def test_empty_text_is_retried(monkeypatch):
     # Пустой ответ (None) тоже не JSON: повторяем
     fake_client = fake_gemini(monkeypatch, [None, GOOD_JSON])
-    assert len(read_prescription(make_png())) == 1
+    assert len(read_prescription(make_png())["drugs"]) == 1
     assert fake_client.models.generate_content.call_count == 2
 
 

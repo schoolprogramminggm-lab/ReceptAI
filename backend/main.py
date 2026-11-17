@@ -25,7 +25,8 @@ from ai.reader import (
     read_prescription,
 )
 from drugs.analogs import find_analogs
-from drugs.search import check_name, find_drug
+from drugs.search import check_name, choose_form, find_drug, unsure_message
+from drugs.status import FOUND, UNSURE, recipe_status
 
 # Загружаем переменные окружения (.env)
 load_dotenv()
@@ -43,28 +44,48 @@ DISCLAIMER = {
 }
 
 
+def to_price(text):
+    """Цена из справочника числом. Если ячейка пустая (цену не проверили), вернёт None."""
+    try:
+        return int(float(text))
+    except (ValueError, TypeError):
+        return None
+
+
 def make_card(read, lang):
     """
     Делает карточку лекарства из того, что прочитал AI.
 
     read — словарь от AI: name, form, dose, frequency, duration, sure
-    Если лекарство уверенно найдено в справочнике, берём из него название, форму,
-    «для чего», цену и аналоги. Если нет, цену и аналоги не показываем:
-    не угадываем лекарство, а даём подсказку unsure_message.
+    У карточки ровно один статус (поле status): found, unsure или not_in_directory.
+    Только при found берём из справочника название, форму, «для чего», цену и аналоги.
+    Иначе цену и аналоги не показываем: не угадываем лекарство.
     """
-    check = check_name(read.get("name"), lang)  # match, score, note
+    check = check_name(read.get("name"), lang)  # match, score, note, status
+    status = check["status"]
+    note = check["note"]
 
     # Строка справочника нужна только если лекарство найдено уверенно
     row = None
-    if check["match"]:
+    if status == FOUND:
         row, _ = find_drug(read.get("name"))
+        # у названия может быть несколько форм: берём ту, что написал врач
+        row = choose_form(row, read.get("form"))
+
+        # AI сам не уверен, как прочитал название: честно говорим «не уверен»,
+        # иначе на карточке было бы и «найдено», и «почерк неразборчив»
+        if not read.get("sure"):
+            status = UNSURE
+            note = unsure_message(row, lang)
+            row = None
 
     analogs = []
     if row:
         for a in find_analogs(row)[:MAX_ANALOGS]:
-            analogs.append({"name": a["trade_name"], "price_kzt": int(float(a["price_kzt"]))})
+            analogs.append({"name": a["trade_name"], "price_kzt": to_price(a["price_kzt"])})
 
     return {
+        "status": status,  # found / unsure / not_in_directory — единственный статус карточки
         # из справочника, если нашли, иначе как прочитал AI
         "name": row["trade_name"] if row else read.get("name"),
         "form": row["form"] if row else read.get("form"),
@@ -73,14 +94,24 @@ def make_card(read, lang):
         "dose": read.get("dose"),
         "frequency": read.get("frequency"),
         "duration": read.get("duration"),
-        "sure": read.get("sure"),
-        "price_kzt": int(float(row["price_kzt"])) if row else None,
+        "sure": read.get("sure"),  # как AI прочитал почерк; на экране не показываем, учтено в status
+        "price_kzt": to_price(row["price_kzt"]) if row else None,  # None, если цену не проверили
+        "price_source": row["price_source"] if row else None,
         "analogs": analogs,
-        "match": check["match"],
+        "match": row["trade_name"] if row else None,
         "score": check["score"],
-        "note": check["note"],             # оставлено как раньше
-        "unsure_message": check["note"],   # «Не уверен, возможно это …» (None, если всё хорошо)
+        "note": note,  # пояснение для человека (None, если status = found)
     }
+
+
+def split_result(result):
+    """
+    read_prescription возвращает словарь {"drugs": [...], "advice": [...]}.
+    Если пришёл просто список (старый формат), считаем, что советов нет.
+    """
+    if isinstance(result, list):
+        return result, []
+    return result.get("drugs", []), result.get("advice", [])
 
 app = FastAPI(
     title="ReceptAI API",
@@ -158,7 +189,7 @@ async def read_prescription_endpoint(
         # read_prescription ждёт ответ Gemini и делает паузы между повторами (time.sleep).
         # Если вызвать её прямо здесь, весь сервер замрёт для других пользователей.
         # asyncio.to_thread запускает её в отдельном потоке, а сервер тем временем работает.
-        drugs = await asyncio.to_thread(read_prescription, image_bytes)
+        result = await asyncio.to_thread(read_prescription, image_bytes)
     except MissingApiKeyError:
         # Не настроен API-ключ на сервере
         raise HTTPException(
@@ -203,6 +234,7 @@ async def read_prescription_endpoint(
 
     # 5. Проверяем каждое название, прочитанное AI, по справочнику
     # и делаем из него карточку: цена, «для чего», аналоги, match/score
+    drugs, advice = split_result(result)
     drugs = [make_card(drug, lang) for drug in drugs]
 
     # 6. Возвращаем распознанные лекарства
@@ -224,6 +256,8 @@ async def read_prescription_endpoint(
         "message": message,
         "received_size_kb": round(len(image_bytes) / 1024, 1),
         "lang": lang,
-        "drugs": drugs,
+        "drugs": drugs,                        # только лекарства, у каждого один status
+        "recipe_status": recipe_status(drugs),  # all_found / partly_found / none_found
+        "advice": advice,                      # «Советы врача» отдельно, не лекарства
         "disclaimer": DISCLAIMER,  # сразу на двух языках: {"kk": ..., "ru": ...}
     }

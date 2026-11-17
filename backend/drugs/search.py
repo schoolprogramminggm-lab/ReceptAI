@@ -17,6 +17,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from rapidfuzz import fuzz, process
 
+from drugs.status import FOUND, NOT_IN_DIRECTORY, UNSURE
+
 # Читаем backend/.env, чтобы получить DRUG_MATCH_THRESHOLD
 load_dotenv()
 
@@ -112,6 +114,27 @@ def find_drug(name):
     return None, score
 
 
+def choose_form(drug, form_text):
+    """
+    У одного названия бывает несколько форм (Амоксиклав: таблетки и суспензия).
+    Из строк справочника с этим названием берём ту, чья форма больше всего
+    похожа на форму, которую прочитал AI. Если формы AI нет или строка одна,
+    возвращаем drug как есть.
+    """
+    if not drug or not form_text or not form_text.strip():
+        return drug
+
+    same_name = [d for d in all_drugs()
+                 if d["trade_name"].strip().lower() == drug["trade_name"].strip().lower()]
+    if len(same_name) < 2:
+        return drug
+
+    # token_set_ratio сравнивает наборы слов: «суспензия 228.5 мг/5 мл» похожа на
+    # «порошок для суспензии 228.5 мг/5 мл» и не похожа на «таблетки 625 мг»
+    text = form_text.strip().lower()
+    return max(same_name, key=lambda d: fuzz.token_set_ratio(text, d["form"].lower()))
+
+
 def unsure_message(drug, lang="ru"):
     """Текст «Не уверен, возможно это …» для названия, которое ниже порога."""
     drug_name = drug["trade_name"]
@@ -127,24 +150,26 @@ def check_name(name, lang="ru"):
     Проверяет одно название, прочитанное AI, и готовит поля для ответа API.
 
     Возвращает словарь:
-      match — название из справочника или None, если не найдено
-      score — похожесть (0-100)
-      note  — пояснение для человека или None, если всё в порядке
+      match  — название из справочника или None, если не найдено
+      score  — похожесть (0-100)
+      note   — пояснение для человека или None, если всё в порядке
+      status — FOUND, UNSURE или NOT_IN_DIRECTORY (ровно один из трёх)
     """
     drug, score = find_drug(name)
 
     # 1. Нашли уверенно: показываем название из справочника без предупреждений
     if drug is not None:
-        return {"match": drug["trade_name"], "score": score, "note": None}
+        return {"match": drug["trade_name"], "score": score, "note": None, "status": FOUND}
 
     # 2. Не нашли: смотрим, есть ли хотя бы похожий вариант для подсказки
     closest, score = find_closest(name)
     if closest is not None and score >= SUGGEST_MIN_SCORE:
-        return {"match": None, "score": score, "note": unsure_message(closest, lang)}
+        return {"match": None, "score": score, "note": unsure_message(closest, lang),
+                "status": UNSURE}
 
     # 3. Совсем ничего похожего (бессмыслица или пустое название)
     if lang == "kk":
         note = "Анықтамалықтан табылмады. Дәрігерден немесе фармацевттен нақтылаңыз."
     else:
         note = "В справочнике не найдено. Уточните у врача или фармацевта."
-    return {"match": None, "score": score, "note": note}
+    return {"match": None, "score": score, "note": note, "status": NOT_IN_DIRECTORY}

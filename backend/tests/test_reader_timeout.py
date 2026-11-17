@@ -133,7 +133,7 @@ def test_hang_goes_straight_to_fallback_model(monkeypatch):
     # Основная модель молчит: без повторов и пауз сразу запасная, и она отвечает
     state = fake_gemini(monkeypatch, [Hang(), GOOD_JSON])
 
-    drugs = read_prescription(make_png())
+    drugs = read_prescription(make_png())["drugs"]
 
     assert drugs[0]["name"] == "Атропин"
     assert models(state) == [MAIN_MODEL, FALLBACK_MODEL]
@@ -170,7 +170,7 @@ def test_hang_without_fallback_model(monkeypatch):
 def test_504_is_treated_like_a_timeout(monkeypatch):
     # Gemini сам прервал долгий запрос (504): тоже сразу запасная модель, без повторов
     state = fake_gemini(monkeypatch, [error(504), GOOD_JSON])
-    assert len(read_prescription(make_png())) == 1
+    assert len(read_prescription(make_png())["drugs"]) == 1
     assert models(state) == [MAIN_MODEL, FALLBACK_MODEL]
     assert state.sleeps == []
 
@@ -232,7 +232,7 @@ def test_no_second_json_attempt_when_time_is_up(monkeypatch):
 def test_json_retry_still_works_when_there_is_time(monkeypatch):
     # А если время есть, повтор из-за не-JSON ответа работает как раньше
     state = fake_gemini(monkeypatch, [Slow(GARBAGE, 5), GOOD_JSON])
-    assert len(read_prescription(make_png())) == 1
+    assert len(read_prescription(make_png())["drugs"]) == 1
     assert len(state.calls) == 2
 
 

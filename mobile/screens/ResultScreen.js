@@ -2,9 +2,35 @@ import React from "react";
 import { StyleSheet, Text, View, ScrollView, TouchableOpacity } from "react-native";
 import { translations } from "../translations";
 
+// Статусы от сервера (backend/drugs/status.py). У каждой карточки ровно один.
+const STATUS_FOUND = "found";                      // найдено в справочнике
+const STATUS_UNSURE = "unsure";                    // «Не уверен, возможно это …»
+const STATUS_NOT_IN_DIRECTORY = "not_in_directory"; // нет в справочнике
+
+// Итоговый статус рецепта
+const RECIPE_ALL_FOUND = "all_found";
+const RECIPE_PARTLY_FOUND = "partly_found";
+const RECIPE_NONE_FOUND = "none_found";
+
 export default function ResultScreen({ result, lang, onBack }) {
   const t = translations[lang || "ru"];
   const drugs = result?.drugs || [];
+  const advice = result?.advice || []; // «Советы врача»: это не лекарства
+
+  // Для каждого статуса карточки: текст значка и его стиль (значок один)
+  const badgeByStatus = {
+    [STATUS_FOUND]: { text: t.statusFound, box: styles.badgeFound, label: styles.badgeTextFound },
+    [STATUS_UNSURE]: { text: t.statusUnsure, box: styles.badgeUnsure, label: styles.badgeTextUnsure },
+    [STATUS_NOT_IN_DIRECTORY]: { text: t.statusNotInDirectory, box: styles.badgeMissing, label: styles.badgeTextMissing },
+  };
+
+  // Итог по рецепту: текст и стиль плашки
+  const bannerByRecipe = {
+    [RECIPE_ALL_FOUND]: { text: t.recipeAllFound, box: styles.bannerGood, label: styles.bannerTextGood },
+    [RECIPE_PARTLY_FOUND]: { text: t.recipePartlyFound, box: styles.bannerWarn, label: styles.bannerTextWarn },
+    [RECIPE_NONE_FOUND]: { text: t.recipeNoneFound, box: styles.bannerBad, label: styles.bannerTextBad },
+  };
+  const banner = bannerByRecipe[result?.recipe_status];
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -24,25 +50,33 @@ export default function ResultScreen({ result, lang, onBack }) {
         )}
       </View>
 
+      {/* Итог по всему рецепту: один статус */}
+      {banner && (
+        <View style={[styles.banner, banner.box]}>
+          <Text style={[styles.bannerText, banner.label]}>{banner.text}</Text>
+        </View>
+      )}
+
       <Text style={styles.sectionHeader}>
         {t.foundDrugs} ({drugs.length}):
       </Text>
 
-      {drugs.map((drug, index) => (
+      {drugs.map((drug, index) => {
+        const badge = badgeByStatus[drug.status] || badgeByStatus[STATUS_NOT_IN_DIRECTORY];
+        return (
         <View key={index} style={styles.drugCard}>
           <View style={styles.drugHeader}>
             <Text style={styles.drugName}>{drug.name || "—"}</Text>
-            <View style={[styles.badge, drug.sure ? styles.badgeSure : styles.badgeUnsure]}>
-              <Text style={[styles.badgeText, drug.sure ? styles.badgeTextSure : styles.badgeTextUnsure]}>
-                {drug.sure ? t.sureYes : t.sureNo}
-              </Text>
+            {/* Один значок на карточке: он зависит только от drug.status */}
+            <View style={[styles.badge, badge.box]}>
+              <Text style={[styles.badgeText, badge.label]}>{badge.text}</Text>
             </View>
           </View>
 
-          {/* Если не уверены — подсказка от сервера (уже на нужном языке) */}
-          {drug.unsure_message && (
+          {/* Если не найдено уверенно — пояснение от сервера (уже на нужном языке) */}
+          {drug.status !== STATUS_FOUND && drug.note && (
             <View style={styles.unsureBox}>
-              <Text style={styles.unsureText}>⚠️ {drug.unsure_message}</Text>
+              <Text style={styles.unsureText}>{drug.note}</Text>
             </View>
           )}
 
@@ -86,13 +120,14 @@ export default function ResultScreen({ result, lang, onBack }) {
             </View>
           )}
 
-          {/* Цена и аналоги показываются, только если лекарство найдено в справочнике */}
-          {drug.price_kzt != null ? (
+          {/* Цена и аналоги показываются, только если лекарство найдено в справочнике.
+              Если цену ещё не проверили, сервер присылает price_kzt = null */}
+          {drug.status === STATUS_FOUND ? (
             <View>
               <View style={styles.row}>
                 <Text style={styles.label}>💰 {t.priceLabel}:</Text>
                 <Text style={styles.price}>
-                  {drug.price_kzt} {t.currency}
+                  {drug.price_kzt != null ? `${drug.price_kzt} ${t.currency}` : t.priceUnknown}
                 </Text>
               </View>
 
@@ -102,7 +137,7 @@ export default function ResultScreen({ result, lang, onBack }) {
                   <View key={i} style={styles.analogRow}>
                     <Text style={styles.analogName}>{analog.name}</Text>
                     <Text style={styles.analogPrice}>
-                      {analog.price_kzt} {t.currency}
+                      {analog.price_kzt != null ? `${analog.price_kzt} ${t.currency}` : t.priceUnknown}
                     </Text>
                   </View>
                 ))
@@ -112,7 +147,18 @@ export default function ResultScreen({ result, lang, onBack }) {
             </View>
           ) : null}
         </View>
-      ))}
+        );
+      })}
+
+      {/* Советы врача (тёплая вода, полоскание, режим…) — отдельно от лекарств */}
+      {advice.length > 0 && (
+        <View style={styles.adviceCard}>
+          <Text style={styles.adviceTitle}>{t.adviceTitle}</Text>
+          {advice.map((tip, i) => (
+            <Text key={i} style={styles.adviceItem}>• {tip}</Text>
+          ))}
+        </View>
+      )}
 
       {/* Обязательный медицинский дисклеймер на выбранном языке (kk/ru) */}
       <View style={styles.disclaimerCard}>
@@ -207,21 +253,64 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 6,
   },
-  badgeSure: {
+  badgeFound: {
     backgroundColor: "#DCFCE7",
   },
   badgeUnsure: {
     backgroundColor: "#FEF3C7",
   },
+  badgeMissing: {
+    backgroundColor: "#FEE2E2",
+  },
   badgeText: {
     fontSize: 12,
     fontWeight: "600",
   },
-  badgeTextSure: {
+  badgeTextFound: {
     color: "#15803D",
   },
   badgeTextUnsure: {
     color: "#B45309",
+  },
+  badgeTextMissing: {
+    color: "#B91C1C",
+  },
+  banner: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 16,
+  },
+  bannerText: {
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  bannerGood: { backgroundColor: "#ECFDF5", borderColor: "#A7F3D0" },
+  bannerTextGood: { color: "#065F46" },
+  bannerWarn: { backgroundColor: "#FEF3C7", borderColor: "#FCD34D" },
+  bannerTextWarn: { color: "#92400E" },
+  bannerBad: { backgroundColor: "#FEE2E2", borderColor: "#FCA5A5" },
+  bannerTextBad: { color: "#991B1B" },
+  adviceCard: {
+    backgroundColor: "#EFF6FF",
+    borderColor: "#BFDBFE",
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 16,
+    marginTop: 4,
+    marginBottom: 12,
+  },
+  adviceTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#1E3A8A",
+    marginBottom: 6,
+  },
+  adviceItem: {
+    fontSize: 14,
+    color: "#1E40AF",
+    marginTop: 4,
+    lineHeight: 20,
   },
   row: {
     flexDirection: "row",

@@ -8,7 +8,7 @@ ai/reader.py — чтение рецепта по фото через Gemini API
 
 Использование из кода:
     from ai.reader import read_prescription
-    drugs = read_prescription(image_bytes)
+    result = read_prescription(image_bytes)
 """
 
 import io
@@ -143,15 +143,25 @@ def _convert_to_jpeg(image_bytes: bytes) -> bytes:
     return output.getvalue()
 
 
-def _validate_json(text: str, strict: bool = False) -> list:
-    """
-    Проверяет, что ответ Gemini — это правильный JSON-массив.
-    Возвращает список лекарств или [] если что-то пошло не так.
+def _norm(text) -> str:
+    """Строка для сравнения: без регистра, лишних пробелов и точки в конце."""
+    return " ".join(str(text).lower().split()).rstrip(".")
 
-    strict=True: если ответ не JSON-массив, бросаем UnreadableResponseError
-    (так read_prescription узнаёт, что нужен повтор). Пустой массив [] — это
+
+def _parse_answer(text: str, strict: bool = False) -> dict:
+    """
+    Разбирает ответ Gemini и возвращает {"drugs": [...], "advice": [...]}.
+
+    Ответ должен быть JSON-объектом {"drugs": [...], "advice": [...]}.
+    Если модель по старой привычке прислала просто массив лекарств, считаем,
+    что советов нет. Мусор превращается в пустой результат.
+
+    strict=True: если ответ не JSON, бросаем UnreadableResponseError
+    (так read_prescription узнаёт, что нужен повтор). Пустые drugs — это
     нормальный ответ «лекарств на фото нет», а не ошибка.
     """
+    empty = {"drugs": [], "advice": []}
+
     # Иногда модель добавляет ```json ... ``` — убираем это
     text = text.strip()
     if text.startswith("```"):
@@ -166,18 +176,26 @@ def _validate_json(text: str, strict: bool = False) -> list:
         print(f"[reader] Ответ модели: {text[:200]}")
         if strict:
             raise UnreadableResponseError()
-        return []
+        return empty
 
-    # Проверяем что это список
-    if not isinstance(data, list):
-        print(f"[reader] Ответ не является списком: {type(data)}")
+    # Достаём список лекарств и список советов
+    if isinstance(data, dict):
+        items = data.get("drugs")
+        advice_items = data.get("advice")
+    elif isinstance(data, list):
+        items, advice_items = data, []  # старый формат: только лекарства
+    else:
+        items = None
+
+    if not isinstance(items, list):
+        print(f"[reader] В ответе нет списка лекарств: {type(data)}")
         if strict:
             raise UnreadableResponseError()
-        return []
+        return empty
 
-    # Проверяем каждый элемент — должны быть обязательные поля
-    result = []
-    for item in data:
+    # Проверяем каждое лекарство — должны быть обязательные поля
+    drugs = []
+    for item in items:
         if not isinstance(item, dict):
             continue
         # Поле name обязательно
@@ -193,9 +211,26 @@ def _validate_json(text: str, strict: bool = False) -> list:
             # sure по умолчанию False — лучше перестраховаться
             "sure": bool(item.get("sure", False)),
         }
-        result.append(drug)
+        drugs.append(drug)
 
-    return result
+    # Советы: только непустые строки, без повторов
+    drug_names = {_norm(d["name"]) for d in drugs if d["name"]}
+    advice = []
+    if isinstance(advice_items, list):
+        for tip in advice_items:
+            if not isinstance(tip, str) or not tip.strip():
+                continue
+            # один и тот же текст не должен быть и лекарством, и советом
+            if _norm(tip) in drug_names or _norm(tip) in {_norm(a) for a in advice}:
+                continue
+            advice.append(tip.strip())
+
+    return {"drugs": drugs, "advice": advice}
+
+
+def _validate_json(text: str, strict: bool = False) -> list:
+    """Только список лекарств из ответа Gemini (советы см. _parse_answer)."""
+    return _parse_answer(text, strict)["drugs"]
 
 
 def _now():
@@ -287,16 +322,17 @@ def _ask_gemini(client, model_name, contents, deadline=None):
     raise GeminiOverloadedError()
 
 
-def read_prescription(image_bytes: bytes) -> list:
+def read_prescription(image_bytes: bytes) -> dict:
     """
-    Главная функция: отправляет фото рецепта в Gemini и возвращает список лекарств.
+    Главная функция: отправляет фото рецепта в Gemini и возвращает лекарства и советы врача.
 
     Аргументы:
         image_bytes: байты изображения (jpeg, png или heic)
 
-    Возвращает:
-        Список словарей с полями: name, form, dose, frequency, duration, sure
-        [] если на фото нет лекарств.
+    Возвращает словарь:
+        {"drugs":  [словари с полями name, form, dose, frequency, duration, sure],
+         "advice": ["пить тёплую воду", ...]}   # общие советы врача, это НЕ лекарства
+        drugs == [] если на фото нет лекарств.
 
     Если Gemini два раза подряд ответил не JSON, бросает UnreadableResponseError.
     Если Gemini перегружен (503/429) или не отвечает (таймаут) и запасная модель тоже,
@@ -357,7 +393,7 @@ def read_prescription(image_bytes: bytes) -> list:
 
         # Разбираем JSON из ответа; если это не JSON, получим UnreadableResponseError
         try:
-            return _validate_json(answer, strict=True)
+            return _parse_answer(answer, strict=True)
         except UnreadableResponseError:
             print(f"[reader] Ответ не JSON (попытка {attempt} из {MAX_ATTEMPTS})")
 
@@ -397,7 +433,7 @@ if __name__ == "__main__":
     image_bytes = photo_path.read_bytes()
 
     try:
-        drugs = read_prescription(image_bytes)
+        result = read_prescription(image_bytes)
     except EnvironmentError as e:
         print(f"\nОшибка настроек: {e}")
         sys.exit(1)
@@ -410,6 +446,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     # Выводим результат
+    drugs = result["drugs"]
     if not drugs:
         print("\nЛекарства не найдены (или рецепт не читается).")
     else:
@@ -427,6 +464,12 @@ if __name__ == "__main__":
                 print(f"   Курс: {drug['duration']}")
             print()
 
+    if result["advice"]:
+        print("Советы врача (не лекарства):")
+        for tip in result["advice"]:
+            print(f"  - {tip}")
+        print()
+
     print("--- JSON-ответ ---")
-    print(json.dumps(drugs, ensure_ascii=False, indent=2))
+    print(json.dumps(result, ensure_ascii=False, indent=2))
 

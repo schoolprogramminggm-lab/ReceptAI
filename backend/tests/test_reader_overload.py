@@ -70,7 +70,7 @@ def test_503_503_then_success(monkeypatch):
     # Два раза 503, на третьей попытке успех: паузы 2 и 4 секунды, запасная модель не нужна
     fake_client, sleeps = fake_gemini(monkeypatch, [error(503), error(503), GOOD_JSON])
 
-    drugs = read_prescription(make_png())
+    drugs = read_prescription(make_png())["drugs"]
 
     assert drugs[0]["name"] == "Атропин"
     assert models_used(fake_client) == [MAIN_MODEL] * 3
@@ -80,7 +80,7 @@ def test_503_503_then_success(monkeypatch):
 def test_429_is_retried_like_503(monkeypatch):
     # 429 (лимит запросов) обрабатывается так же, как 503
     fake_client, sleeps = fake_gemini(monkeypatch, [error(429), GOOD_JSON])
-    assert len(read_prescription(make_png())) == 1
+    assert len(read_prescription(make_png())["drugs"]) == 1
     assert models_used(fake_client) == [MAIN_MODEL] * 2
     assert sleeps == [2]
 
@@ -91,7 +91,7 @@ def test_503_all_the_time_uses_fallback_model(monkeypatch):
         monkeypatch, [error(503), error(503), error(503), GOOD_JSON]
     )
 
-    drugs = read_prescription(make_png())
+    drugs = read_prescription(make_png())["drugs"]
 
     assert drugs[0]["name"] == "Атропин"
     assert models_used(fake_client) == [MAIN_MODEL] * 3 + [FALLBACK_MODEL]

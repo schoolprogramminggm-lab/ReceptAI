@@ -37,7 +37,7 @@ def test_no_analogs(monkeypatch):
 
 
 def test_real_reference():
-    # Проверяем все 130 лекарств настоящего справочника
+    # Проверяем все лекарства настоящего справочника
     found_any = False
     for drug in all_drugs():
         result = find_analogs(drug)
@@ -52,9 +52,12 @@ def test_real_reference():
             assert d["inn"].strip().lower() == drug["inn"].strip().lower()
             assert d["form"].strip().lower() == drug["form"].strip().lower()
 
-        # 3. Отсортировано по цене: от дешёвых к дорогим
-        prices = [float(d["price_kzt"]) for d in result]
-        assert prices == sorted(prices)
+        # 3. Отсортировано по цене: от дешёвых к дорогим,
+        #    а аналоги без проверенной цены (пустая ячейка) стоят в конце
+        prices = [d["price_kzt"] for d in result]
+        with_price = [float(p) for p in prices if p.strip()]
+        assert with_price == sorted(with_price)
+        assert all(p.strip() for p in prices[:len(with_price)])  # цены идут первыми
 
     # В справочнике есть лекарства с аналогами
     assert found_any

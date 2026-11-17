@@ -58,7 +58,8 @@ def test_read_prescription_success(mock_read):
 
     # Проверка разделения полей первого лекарства
     drug = data["drugs"][0]
-    assert drug["name"] == "натрия хлорид"
+    # «натрия хлорид» есть в справочнике, поэтому название приходит оттуда (с большой буквы)
+    assert drug["name"].lower() == "натрия хлорид"
     assert drug["form"] == "раствор 0.9%"
     assert drug["dose"] == "по 2 капли в оба глаза"
     assert "каждые 5 минут" in drug["frequency"]
@@ -166,7 +167,8 @@ def test_read_prescription_two_drug_cards(mock_read):
         assert card["name"] == card["match"]
         assert card["indication"]
         assert isinstance(card["price_kzt"], int) and card["price_kzt"] > 0
-        assert card["unsure_message"] is None
+        assert card["note"] is None
+        assert card["status"] == "found"
 
         # аналоги: от 1 до 3, у каждого название и цена, по возрастанию цены
         assert 1 <= len(card["analogs"]) <= 3
@@ -192,7 +194,7 @@ def test_read_prescription_two_drug_cards(mock_read):
 @patch("main.read_prescription")
 def test_unsure_card_has_no_price_and_analogs(mock_read):
     # Название не уверенно найдено в справочнике: цену и аналоги не показываем,
-    # а даём подсказку unsure_message
+    # а даём подсказку в поле note
     mock_read.return_value = [
         {"name": "Азотроп", "form": "капли", "dose": "1 капля",
          "frequency": "2 раза в день", "duration": "7 дней", "sure": False},
@@ -209,5 +211,6 @@ def test_unsure_card_has_no_price_and_analogs(mock_read):
     assert card["match"] is None
     assert card["price_kzt"] is None
     assert card["analogs"] == []
-    assert "Не уверен, возможно это" in card["unsure_message"]
+    assert card["status"] == "unsure"
+    assert "Не уверен, возможно это" in card["note"]
     assert card["dose"] == "1 капля"
