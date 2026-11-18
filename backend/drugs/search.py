@@ -76,6 +76,18 @@ def all_drugs():
     return _drugs
 
 
+def directory_for_prompt():
+    """
+    Справочник текстом для промпта Gemini: по строке на лекарство
+    «торговое название | МНН | форма». Собирается из drugs.csv при каждом запуске,
+    вручную список не ведём: добавили лекарство в справочник, и AI о нём знает.
+    """
+    lines = []
+    for d in all_drugs():
+        lines.append(f"{d['trade_name'].strip()} | {d['inn'].strip()} | {d['form'].strip()}")
+    return "\n".join(lines)
+
+
 def find_closest(name):
     """
     Находит в справочнике самое похожее лекарство БЕЗ учёта порога.

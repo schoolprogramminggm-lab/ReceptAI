@@ -13,6 +13,7 @@ from typing import Optional
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+from rapidfuzz import fuzz
 
 from ai.reader import (
     INVALID_IMAGE_MESSAGE,
@@ -25,7 +26,7 @@ from ai.reader import (
     read_prescription,
 )
 from drugs.analogs import find_analogs
-from drugs.search import check_name, choose_form, find_drug, unsure_message
+from drugs.search import check_name, choose_form, find_drug, get_threshold, unsure_message
 from drugs.status import FOUND, UNSURE, recipe_status
 
 # Загружаем переменные окружения (.env)
@@ -52,6 +53,19 @@ def to_price(text):
         return None
 
 
+def is_weak_replacement(read):
+    """
+    True, если AI заменил прочитанное слово названием из справочника, а похожесть
+    между ними ниже порога. Если read_as нет или оно совпадает с name — замены не было.
+    """
+    name, read_as = read.get("name"), read.get("read_as")
+    if not name or not read_as:
+        return False
+    # partial_ratio ищет название внутри более длинной строки: если AI записал в read_as
+    # «раствором натрия хлорида 0,9%», то «натрия хлорид» в нём находится почти целиком
+    return fuzz.partial_ratio(name.strip().lower(), read_as.strip().lower()) < get_threshold()
+
+
 def make_card(read, lang):
     """
     Делает карточку лекарства из того, что прочитал AI.
@@ -74,7 +88,10 @@ def make_card(read, lang):
 
         # AI сам не уверен, как прочитал название: честно говорим «не уверен»,
         # иначе на карточке было бы и «найдено», и «почерк неразборчив»
-        if not read.get("sure"):
+        # Так же, если AI подставил название из справочника, но прочитанное буквально
+        # на него совсем не похоже («Жлавол» → «Амоксиклав»): сервер не верит такой замене,
+        # показываем «возможно это …»
+        if not read.get("sure") or is_weak_replacement(read):
             status = UNSURE
             note = unsure_message(row, lang)
             row = None
@@ -88,6 +105,8 @@ def make_card(read, lang):
         "status": status,  # found / unsure / not_in_directory — единственный статус карточки
         # из справочника, если нашли, иначе как прочитал AI
         "name": row["trade_name"] if row else read.get("name"),
+        # что AI прочитал буквально; приложение покажет «в рецепте написано: …», если оно ≠ name
+        "read_as": read.get("read_as") or read.get("name"),
         "form": row["form"] if row else read.get("form"),
         "indication": row["indication"] if row else None,  # «для чего»
         # «как написал врач»: ровно как прочитал AI, ничего не меняем

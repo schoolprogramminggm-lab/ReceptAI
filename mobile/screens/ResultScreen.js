@@ -80,6 +80,13 @@ export default function ResultScreen({ result, lang, onBack }) {
             </View>
           )}
 
+          {/* Если название в карточке не совпадает с тем, что AI прочитал буквально, показываем мелко, что написано в рецепте */}
+          {drug.read_as && (drug.name || "").trim().toLowerCase() !== drug.read_as.trim().toLowerCase() && (
+            <Text style={styles.readAs}>
+              {t.readAsLabel}: {drug.read_as}
+            </Text>
+          )}
+
           {drug.form && (
             <View style={styles.row}>
               <Text style={styles.label}>{t.formLabel}:</Text>
@@ -327,6 +334,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: "#1E293B",
     fontWeight: "600",
+  },
+  readAs: {
+    fontSize: 12,
+    color: "#94A3B8",
+    marginBottom: 4,
   },
   unsureBox: {
     backgroundColor: "#FEF3C7",

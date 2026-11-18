@@ -25,6 +25,14 @@ from google.genai import errors as genai_errors
 from google.genai import types
 from PIL import Image
 
+from drugs.search import directory_for_prompt
+
+# Метка в prompt.txt, вместо которой подставляется список лекарств из справочника
+DRUG_LIST_MARK = "{{DRUG_LIST}}"
+
+# Модель Gemini по умолчанию, если GEMINI_MODEL не задан в .env
+DEFAULT_MODEL = "gemini-3.8-flash"
+
 # Загружаем переменные из backend/.env
 load_dotenv()
 
@@ -112,10 +120,13 @@ class MissingApiKeyError(EnvironmentError):
 
 
 def _load_prompt() -> str:
-    """Читает инструкцию для Gemini из prompt.txt."""
+    """Читает инструкцию для Gemini из prompt.txt и вставляет в неё справочник лекарств."""
     # Путь к prompt.txt находится в той же папке, что и этот файл
     prompt_path = Path(__file__).parent / "prompt.txt"
-    return prompt_path.read_text(encoding="utf-8")
+    text = prompt_path.read_text(encoding="utf-8")
+    # В prompt.txt есть фигурные скобки JSON, поэтому format() не подходит:
+    # просто заменяем метку на список лекарств из drugs.csv
+    return text.replace(DRUG_LIST_MARK, directory_for_prompt())
 
 
 def _convert_to_jpeg(image_bytes: bytes) -> bytes:
@@ -202,8 +213,14 @@ def _parse_answer(text: str, strict: bool = False) -> dict:
         if "name" not in item:
             continue
         # Добавляем все нужные поля, если их нет — None
+        # read_as — что AI прочитал буквально. Если модель его не прислала
+        # (или прислала пустым), считаем, что прочитано то же, что в name
+        read_as = item.get("read_as")
+        if not isinstance(read_as, str) or not read_as.strip():
+            read_as = item.get("name")
         drug = {
             "name": item.get("name"),
+            "read_as": read_as,
             "form": item.get("form"),
             "dose": item.get("dose"),
             "frequency": item.get("frequency"),
@@ -330,7 +347,7 @@ def read_prescription(image_bytes: bytes) -> dict:
         image_bytes: байты изображения (jpeg, png или heic)
 
     Возвращает словарь:
-        {"drugs":  [словари с полями name, form, dose, frequency, duration, sure],
+        {"drugs":  [словари с полями name, read_as, form, dose, frequency, duration, sure],
          "advice": ["пить тёплую воду", ...]}   # общие советы врача, это НЕ лекарства
         drugs == [] если на фото нет лекарств.
 
@@ -348,7 +365,7 @@ def read_prescription(image_bytes: bytes) -> dict:
 
     # Получаем настройки из .env
     api_key = os.getenv("GEMINI_API_KEY")
-    model_name = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+    model_name = os.getenv("GEMINI_MODEL", DEFAULT_MODEL)
 
     if not api_key:
         raise MissingApiKeyError(
